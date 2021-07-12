@@ -1,0 +1,34 @@
+{
+  "name": "psps_create_eppackage_job_api",
+  "author": "PG&E AWS WildFire Viewer Team",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Create job for the externalportalpackage report. See GeoMart PSPS Wiki https://wiki.comp.pge.com/display/GEOMW2/Rest+API+Details",
+  "main": "/createjob.js",
+  "scripts": {
+    "test": "jest --coverage",
+    "start": "nodemon createjob.js",
+    "lint": "eslint . --ext .js"
+  },
+  "dependencies": {
+    "aws-sdk": "^2.587.0",
+    "body-parser": "^1.19.0",
+    "cors": "^2.8.5",
+    "dotenv": "^8.2.0",
+    "express": "^4.16.4",
+    "http-status-codes": "^1.4.0",
+    "knex": "^0.19.5",
+    "lambda-api": "^0.10.4",
+    "moment": "^2.24.0",
+    "pg": "^7.12.1",
+    "querystring": "^0.2.0",
+    "rus-diff": "^1.1.0",
+    "url": "^0.11.0"
+  },
+  "devDependencies": {
+    "eslint": "^6.8.0",
+    "jest": "^25.2.7",
+    "nodemon": "^1.19.4",
+    "request": "^2.88.0"
+  }
+}

@@ -1,0 +1,711 @@
+AWSTemplateFormatVersion: 2010-09-09
+ 
+Parameters:
+
+  appid:
+    Description: "The appid"
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /general/appid/pspsviewer
+
+  pOrderNumber:
+    Description: "The order"
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /general/order/pspsviewer
+
+  # CorpID of the person who 'owns' the stack and associated resources
+  pOwnerTag:
+    Type: 'String'
+    Description: "CorpID of Table Owner"
+    Default: /general/owner
+
+  pApplicationName:
+    Description: "The Security GroupID of the Lambda Depyloyment"
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /general/appname/pspsviewer
+   
+  # Environment specification (appended to tags, etc)
+  pEnv:
+    Type: 'String'
+    Description: "The environment"
+    AllowedValues:
+      - 'prod'
+      - 'qa'
+      - 'tst'
+      - 'dev'
+
+  Envvariable:
+    Type: 'String'
+    Description: "The environment"
+    AllowedValues:
+      - 'PROD'
+      - 'QA'
+      - 'TST'
+      - 'DEV'
+
+
+  # To get the SubnetID for lambda execution 
+  pSubnetID1:
+    Description: "The SubnetID1 of the Lambda Depyloyment"
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /vpc/privatesubnet1/id
+
+  pSubnetID2:
+    Description: "The SubnetID2 of the Lambda Depyloyment"
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /vpc/privatesubnet2/id
+
+  pSubnetID3:
+    Description: "The SubnetID3 of the Lambda Depyloyment"
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /vpc/privatesubnet3/id
+
+  # To provide details for lambda authorizer 
+  pauthorizername:
+    Type: String
+
+  account:
+    Type: String
+
+  ptype:
+    Type: String
+    Default: REQUEST
+    AllowedValues:
+      - TOKEN
+      - REQUEST
+    Description: Default is REQUEST
+
+  plambdaarn:
+    Type: String
+
+  plambdalayer:
+    Type: String
+
+  pdefaultsecuritygroup:
+    Description: 'Parameter store name /vpc/Securitygroupid'
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /vpc/Securitygroupid
+    
+    
+  pvpclambdaapieendpoint:
+      Description: "VPC api endpoint for the Lambda Depyloyment"
+      Type: 'AWS::SSM::Parameter::Value<String>'
+      Default: /vpc/endpoint/execute-api  
+  
+  pVPCID:
+    Description: 'Parameter store name /vpc/id'
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: /vpc/id
+    
+  DelaySeconds:
+    Description: The time in seconds that the delivery of all messages in the queue
+      is delayed. You can specify an integer value of 0 to 900 (15 minutes).
+    Type: Number
+    Default: '5'
+  MaximumMessageSize:
+    Type: Number
+    Description: The limit of how many bytes that a message can contain before Amazon
+      SQS rejects it, 1024 bytes (1 KiB) to 262144 bytes (256 KiB)
+    Default: '262144'
+  MessageRetentionPeriod:
+    Description: 'The number of seconds that Amazon SQS retains a message. You can
+      specify an integer value from 60 seconds (1 minute) to 1209600 seconds (14 days). '
+    Type: Number
+    Default: '345600'
+  ReceiveMessageWaitTimeSeconds:
+    Description: Specifies the duration, in seconds, that the ReceiveMessage action
+      call waits until a message is in the queue in order to include it in the response,
+      as opposed to returning an empty response if a message is not yet available.
+      1 to 20
+    Type: Number
+    Default: '0'
+  UsedeadletterQueue:
+    Description: A dead-letter queue is a queue that other (source) queues can target
+      for messages that can't be processed (consumed) successfully. You can set aside
+      and isolate these messages in the dead-letter queue to determine why their processing
+      doesn't succeed.
+    Type: String
+    AllowedValues:
+    - 'true'
+    - 'false'
+    Default: 'false'
+  VisibilityTimeout:
+    Description: This should be longer than the time it would take to process and
+      delete a message, this should not exceed 12 hours.
+    Type: Number
+    Default: '900'
+
+Mappings: {}
+Conditions:
+  CreateDeadLetterQueue:
+    Fn::Equals:
+    - Ref: UsedeadletterQueue
+    - 'true'
+
+# The following sections define the various AWS resources,
+# and their specific configurations, created by this template
+
+Resources:
+
+  SQSQueue:
+      Type: AWS::SQS::Queue   
+      Properties:
+        QueueName: !Sub 'psps_eppackage_${pEnv}'
+        Tags:
+          - Key: Owner
+            Value: !Ref pOwnerTag
+          - Key: ENV
+            Value: !Ref pEnv
+          - Key: Order
+            Value: !Ref pOrderNumber
+          - Key: Appid
+            Value: !Ref appid
+          - Key: AppName
+            Value: !Ref pApplicationName 
+        KmsDataKeyReusePeriodSeconds: 600
+        KmsMasterKeyId: alias/aws/sqs
+        DelaySeconds:
+          Ref: DelaySeconds
+        MaximumMessageSize:
+          Ref: MaximumMessageSize
+        MessageRetentionPeriod:
+          Ref: MessageRetentionPeriod
+        ReceiveMessageWaitTimeSeconds:
+          Ref: ReceiveMessageWaitTimeSeconds
+        RedrivePolicy:
+          Fn::If:
+          - CreateDeadLetterQueue
+          - deadLetterTargetArn:
+              Fn::GetAtt:
+              - MyDeadLetterQueue
+              - Arn
+            maxReceiveCount: 5
+          - Ref: AWS::NoValue
+        VisibilityTimeout:
+          Ref: VisibilityTimeout
+  MyDeadLetterQueue:
+    Condition: CreateDeadLetterQueue
+    Type: AWS::SQS::Queue
+  
+  GatewayResponseDefault4XX:
+    Type: 'AWS::ApiGateway::GatewayResponse'
+    Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+        ResponseType: DEFAULT_4XX
+        RestApiId: 
+          Ref: 'apiGateway'
+  
+  GatewayResponseDefault5XX:
+    Type: 'AWS::ApiGateway::GatewayResponse'
+    Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+        ResponseType: DEFAULT_5XX
+        RestApiId:
+          Ref: 'apiGateway'
+
+  # Create IAM role for circuitapi component
+  rLambdaFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'geomartcloud-psps-eppackageapi-lambdarole-${pEnv}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal: {Service: [lambda.amazonaws.com]}
+          Action: ['sts:AssumeRole']
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess'  
+      Policies:
+      - PolicyName: !Sub 'geomartcloud-psps-eppackageapi-lambdapolicy-${pEnv}'
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            # CloudWatch list and write logs
+            - Effect: Allow
+              Action:
+                - 'logs:CreateLogGroup'
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
+                - 'logs:DescribeLogStreams'
+                - s3:*
+              Resource: '*'            
+            # Secrets Manager list and read
+            - Effect: Allow
+              Action: 
+                - secretsmanager:ListSecrets
+                - secretsmanager:GetSecretValue
+                - secretsmanager:ListSecretVersionIds
+                - secretsmanager:DescribeSecret
+                - secretsmanager:GetResourcePolicy
+              Resource: '*'
+            # KMS list and read
+            - Effect: Allow
+              Action: 
+                - kms:DescribeKey
+                - kms:ListAliases
+                - kms:ListKeys
+              Resource: '*'
+            # SQS Full access
+            - Effect: Allow
+              Action: 
+                - sqs:*
+              Resource: '*'
+            # lambda access
+            - Effect: Allow
+              Action: 
+                - lambda:ListFunctions
+                - lambda:AddPermission
+                - lambda:CreateFunction
+                - lambda:GetFunction
+                - lambda:InvokeFunction
+                - lambda:UpdateFunctionConfiguration
+              Resource: arn:aws:lambda:*:*:function:SecretsManager*
+            - Effect: Allow
+              Action:
+                - serverlessrepo:CreateCloudFormationChangeSet
+              Resource: arn:aws:serverlessrepo:*:*:applications/SecretsManager*  
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: arn:aws:s3:::awsserverlessrepo-changesets*
+            - Effect: Allow
+              Action:
+                - ec2:CreateNetworkInterface
+                - ec2:DescribeSecurityGroups
+                - ec2:DescribeSubnets
+                - ec2:DescribeVpcs
+                - ec2:DescribeNetworkInterfaces
+                - ec2:DeleteNetworkInterface
+                - ecr:GetAuthorizationToken
+                - ecr:BatchCheckLayerAvailability
+                - ecr:GetDownloadUrlForLayer
+                - ecr:BatchGetImage
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+                - rds:DescribeDBClusters
+                - rds:DescribeDBInstances
+                - tag:GetResources
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: arn:aws:s3:::*/AWSLogs/*/Config/*
+            - Effect: Allow
+              Action:
+                - config:Put*
+                - config:Get*
+                - config:List*
+                - config:Describe*
+                - config:BatchGet*
+                - config:Select*
+              Resource: "*"
+      Tags:
+        - Key: Owner
+          Value: !Ref pOwnerTag
+        - Key: ENV
+          Value: !Ref pEnv
+        - Key: Order
+          Value: !Ref pOrderNumber
+        - Key: Appid
+          Value: !Ref appid
+        - Key: AppName
+          Value: !Ref pApplicationName  
+
+
+
+  # AWS IAM Role to be used inside API Gateway
+  pspseppackage:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'geomartcloud-psps-eppackageapi-apigatewayrole-${pEnv}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: 'Allow'
+            Principal:
+              Service:
+                - 'apigateway.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: !Sub 'geomartcloud-psps-eppackageapi-apigatewaypolicy-${pEnv}'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action: 'lambda:*'
+                Resource:
+                  - !GetAtt createjob.Arn
+                  - !GetAtt jobstatus.Arn
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:DescribeLogGroups'
+                  - 'logs:DescribeLogStreams'
+                  - 'logs:PutLogEvents'
+                  - 'logs:GetLogEvents'
+                  - 'logs:FilterLogEvents'
+                Resource: '*'
+      Tags:
+        - Key: Owner
+          Value: !Ref pOwnerTag
+        - Key: ENV
+          Value: !Ref pEnv
+        - Key: Order
+          Value: !Ref pOrderNumber
+        - Key: Appid
+          Value: !Ref appid
+        - Key: AppName
+          Value: !Ref pApplicationName  
+
+  #Creating the API
+  apiGateway:
+    Type: AWS::ApiGateway::RestApi
+    DependsOn: [ lambdaSecurityGroup ]
+    Properties:
+      Name: !Sub 'psps_eppackage_${pEnv}'
+      Description: API Endpoint for circuit 
+      Tags:
+        - Key: Owner
+          Value: !Ref pOwnerTag
+        - Key: ENV
+          Value: !Ref pEnv
+        - Key: Order
+          Value: !Ref pOrderNumber
+        - Key: Appid
+          Value: !Ref appid
+        - Key: AppName
+          Value: !Ref pApplicationName
+    
+  # Create circuit API Security Group
+  lambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for event api lambda
+      GroupName: !Sub geomartcloud-psps-eppackageapi-securitygroup-${pEnv} 
+      VpcId: !Ref pVPCID                 
+      Tags:
+        - Key: Owner
+          Value: !Ref pOwnerTag
+        - Key: ENV
+          Value: !Ref pEnv
+        - Key: Order
+          Value: !Ref pOrderNumber
+        - Key: Appid
+          Value: !Ref appid
+        - Key: AppName
+          Value: !Ref pApplicationName
+  
+  # Create Ingress rule for Security Group to support AWS API
+  lambdaSecurityGroupIngress:
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    DependsOn: [ lambdaSecurityGroup ]
+    Properties:
+        GroupId: !Ref lambdaSecurityGroup
+        IpProtocol: -1
+        SourceSecurityGroupId: !GetAtt lambdaSecurityGroup.GroupId
+
+
+  eppackageresource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt apiGateway.RootResourceId
+      PathPart: eppackage
+      RestApiId: !Ref apiGateway 
+    
+  createjobresource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref eppackageresource
+      PathPart: createjob
+      RestApiId: !Ref apiGateway 
+
+  jobstatusresource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref eppackageresource
+      PathPart: jobstatus
+      RestApiId: !Ref apiGateway
+
+  #Creating the API Method
+  createjobMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ResourceId: !Ref createjobresource
+      RestApiId: !Ref apiGateway
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref lambdaAuthorizer
+      HttpMethod: POST
+      Integration:
+        Credentials: !GetAtt pspseppackage.Arn
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt createjob.Arn  
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: $input.json('$')
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,jwt'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: $input.json('$')
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: '200'
+        
+  # CORS API GATEWAY Method        
+    
+  createjobMethodCORSOption:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      ResourceId: !Ref createjobresource
+      RestApiId: !Ref apiGateway
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,jwt'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+            StatusCode: '200'
+        PassthroughBehavior: NEVER
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: '200' 
+
+  #Creating the API Method
+  jobstatusMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ResourceId: !Ref jobstatusresource
+      RestApiId: !Ref apiGateway
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref lambdaAuthorizer
+      HttpMethod: POST
+      Integration:
+        Credentials: !GetAtt pspseppackage.Arn
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt jobstatus.Arn  
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: $input.json('$')
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,jwt'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: $input.json('$')
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: '200'
+        
+  # CORS API GATEWAY Method        
+    
+  jobstatusMethodCORSOption:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      ResourceId: !Ref jobstatusresource
+      RestApiId: !Ref apiGateway
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,jwt'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+            StatusCode: '200'
+        PassthroughBehavior: NEVER
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: '200' 
+
+  lambdaAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: !Ref pauthorizername
+      Type: !Ref ptype
+      RestApiId: !Ref apiGateway
+      IdentitySource: "method.request.header.Authorization, method.request.header.jwt"
+      AuthorizerUri: !Sub arn:aws:apigateway:us-west-2:lambda:path/2015-03-31/functions/${plambdaarn}/invocations
+             
+
+  #API Stage
+  ApiGatewayStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref ApiGatewayDeployment
+      Description: !Sub 'Lambda API Stage ${pEnv}'
+      RestApiId: !Ref apiGateway
+      StageName: !Sub 'psps-${pEnv}'
+      TracingEnabled: True
+      MethodSettings:
+        - HttpMethod: '*'
+          LoggingLevel: ERROR
+          ResourcePath: /*
+          MetricsEnabled: true
+      Tags:
+        - Key: Owner
+          Value: !Ref pOwnerTag
+        - Key: ENV
+          Value: !Ref pEnv
+        - Key: Order
+          Value: !Ref pOrderNumber
+        - Key: Appid
+          Value: !Ref appid
+        - Key: AppName
+          Value: !Ref pApplicationName
+
+ 
+  #API Deployment
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - createjobMethod
+      - createjobMethodCORSOption
+      - jobstatusMethod
+      - jobstatusMethodCORSOption
+    Properties:
+      Description: NodeJS Lambda API Deployment
+      RestApiId: !Ref apiGateway
+ 
+ 
+ 
+# AWS Lambda Configuration
+# This is the 'target' of our deployment step (final step of buildspec)
+
+  createjob:
+    Type: AWS::Lambda::Function
+    DependsOn: [ lambdaSecurityGroup, rLambdaFunctionRole]
+    Properties:
+      FunctionName: !Sub 'psps_createjob_eppackage_${pEnv}'
+      Runtime: nodejs10.x
+      Handler: createjob.handler
+      Role: !GetAtt rLambdaFunctionRole.Arn
+      Timeout: 900
+      MemorySize: 3008
+      Layers: 
+        - !Sub arn:aws:lambda:us-west-2:${account}:layer:${plambdalayer}
+      TracingConfig:
+        Mode: Active
+      Environment:
+        Variables:
+          NODE_ENV: !Ref Envvariable
+      # Tag all the things (from parameter values)
+      Tags:
+        - Key: Owner
+          Value: !Ref pOwnerTag
+        - Key: ENV
+          Value: !Ref pEnv
+        - Key: Order
+          Value: !Ref pOrderNumber
+        - Key: Appid
+          Value: !Ref appid
+        - Key: AppName
+          Value: !Ref pApplicationName
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt lambdaSecurityGroup.GroupId
+        SubnetIds:
+          - Ref: pSubnetID1
+          - Ref: pSubnetID2
+          - Ref: pSubnetID3
+      Code:
+        ZipFile: !Sub |
+          # const postEvent = async (req, res) => {
+          #   // TODO implement
+          #   console.log("Hello from Lambda");
+          # };
+  
+  jobstatus:
+    Type: AWS::Lambda::Function
+    DependsOn: [ lambdaSecurityGroup, rLambdaFunctionRole]
+    Properties:
+      FunctionName: !Sub 'psps_jobstatus_eppackage_${pEnv}'
+      Runtime: nodejs10.x
+      Handler: jobstatus.handler
+      Role: !GetAtt rLambdaFunctionRole.Arn
+      Timeout: 900
+      MemorySize: 3008
+      Layers: 
+        - !Sub arn:aws:lambda:us-west-2:${account}:layer:${plambdalayer}
+      TracingConfig:
+        Mode: Active
+      Environment:
+        Variables:
+          NODE_ENV: !Ref Envvariable
+      # Tag all the things (from parameter values)
+      Tags:
+        - Key: Owner
+          Value: !Ref pOwnerTag
+        - Key: ENV
+          Value: !Ref pEnv
+        - Key: Order
+          Value: !Ref pOrderNumber
+        - Key: Appid
+          Value: !Ref appid
+        - Key: AppName
+          Value: !Ref pApplicationName
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt lambdaSecurityGroup.GroupId
+        SubnetIds:
+          - Ref: pSubnetID1
+          - Ref: pSubnetID2
+          - Ref: pSubnetID3
+      Code:
+        ZipFile: !Sub |
+          # const postEvent = async (req, res) => {
+          #   // TODO implement
+          #   console.log("Hello from Lambda");
+          # };
+
+Outputs:
+  apigatewayID:
+    Description: ApiGatewayID
+    Value: !Ref apiGateway
+  stageID:
+    Description: stageID
+    Value: !Ref ApiGatewayStage
